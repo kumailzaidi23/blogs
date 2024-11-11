@@ -9,15 +9,15 @@ export default function NotFound() {
         </h1>
       </div>
       <div className="max-w-md">
-        <p className="mb-4 text-xl font-bold leading-normal md:text-2xl">
-          Sorry we couldn't find this page.
+        <p className="mb-4 text-xl font-bold leading-normal md:text-2xl">PWNED&#63;</p>
+        <p className="mb-8">
+          Oops! This page just got sent to <strong>/dev/null</strong>.
         </p>
-        <p className="mb-8">But dont worry, you can find plenty of other things on our homepage.</p>
         <Link
           href="/"
-          className="focus:shadow-outline-blue inline rounded-lg border border-transparent bg-blue-600 px-4 py-2 text-sm font-medium leading-5 text-white shadow transition-colors duration-150 hover:bg-blue-700 focus:outline-none dark:hover:bg-blue-500"
+          className="focus:shadow-outline-blue inline rounded-lg border border-transparent bg-red-600 px-4 py-2 text-sm font-medium leading-5 text-white shadow transition-colors duration-150 hover:bg-green-600 focus:outline-none dark:hover:bg-green-600"
         >
-          Back to homepage
+          ret2Home
         </Link>
       </div>
     </div>
