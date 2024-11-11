@@ -1,0 +1,89 @@
+---
+title: AIRANGE'24 - Rev - Constraints
+date: '2024-03-10'
+tags: ['ctf', 'reversing', 'airange', 'z3']
+draft: false
+summary: Constraints was an amazing challenge, one of the best reversing challenges that I've played so far.
+---
+
+## Challenge Description
+
+Ashfaq Nadeem made an unbreakable licensing software
+
+[Download](https://airange.online/files/11bdbd4c109d4e02adbea36c9e7a359f/constraints?token=eyJ1c2VyX2lkIjo3MSwidGVhbV9pZCI6bnVsbCwiZmlsZV9pZCI6Mjd9.Ze0HUg.IDkDcwuMhzvFeZZickSsr-_9Jds)
+
+## Solution
+
+My friend Kumail and I solved this challenge together.
+
+![screenshot](/static/writeups/airange24/rev/bloods.png)
+
+First of all open the compiled code in ghidra. Here, in the main function, we can see that **`verify`** function is called by providing key (entered by the user) as argument/parameters:
+
+![screenshot](/static/writeups/airange24/rev/constraints1.png)
+
+The key verification process is performed by the `verify` function, which takes four integers extracted from the key input. The function performs several arithmetic operations and checks if the result matches certain values.
+
+Verify Function:
+
+![screenshot](/static/writeups/airange24/rev/constraints2.png)
+
+Given the constraints within the **`verify`** function, we can represent the problem as a set of equations:
+
+![screenshot](/static/writeups/airange24/rev/constraints3.png)
+
+To efficiently solve these equations, we employ the Z3 theorem prover, a powerful tool for constraint solving. I used python’s Z3 library to find the values of the four integers required for a valid key:
+
+```python:constraints-solver
+from z3 import *
+
+var1, var2, var3, var4 = Ints('var1 var2 var3 var4')
+
+# Defining constraints
+constraints = [
+    (var3 + var1 * var2) - var4 == 873457778,
+    var2 - var1 == 24297,
+    (var3 * -5) + var4 == -378312,
+    (var2 + var4) % 100000 == 16595
+]
+
+# Creating a solver instance
+solver = Solver()
+
+# Add constraints to the solver
+solver.add(constraints)
+
+# Checking if the constraints are satisfiable
+if solver.check() == sat:
+    # Getting the satisfying model
+    model = solver.model()
+
+    # Extracting values of variables
+    valVar1 = model[var1].as_long()
+    valVar2 = model[var2].as_long()
+    valVar3 = model[var3].as_long()
+    valVar4 = model[var4].as_long()
+
+    # Printing key
+    print(str(valVar1) + "-" + str(valVar2) + "-" + str(valVar3) + "-" + str(valVar4))
+else:
+    print("Constraints are unsatisfiable.")
+```
+
+Execute the Python script, which will compute the values of the four integers based on the provided constraints:
+
+![screenshot](/static/writeups/airange24/rev/constraints4.png)
+
+Testing against local binary:
+
+![screenshot](/static/writeups/airange24/rev/constraints5.png)
+
+Running against remote server to get the flag:
+
+![screenshot](/static/writeups/airange24/rev/constraints6.png)
+
+Flag:
+
+```
+AT24{d1d_y0u_us3_z3_0r_d1d_1t_m4nually??}
+```

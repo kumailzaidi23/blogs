@@ -1,0 +1,113 @@
+---
+title: AIRANGE'24 - Web - Sudo Arena
+date: '2024-03-10'
+tags: ['ctf', 'web', 'airange', 'burpsuite', 'ffuf']
+draft: false
+summary: It this challenge we will learn about directory fuzzing & as well as query fuzzing.
+---
+
+## Challenge Description
+
+Why was the admin at Area 51 so efficient? Because they had their `ID` on an alien database.
+
+## Solution
+
+I had first blood on this web challenge.
+
+![FirstBlood](/static/writeups/airange24/web/first_blood_sudo_arena.png)
+
+In this challenge, I initially thought that it is some sort of SQL injection challenge.
+
+But it wasn’t.
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_1.png)
+
+After some tries and getting responses saying “Invalid Credentials”, I thought why not fuzz its directories?
+
+I used `ffuf` with **`rockyou.txt`** as wordlist to do that but you can use `gobuster` if you want.
+
+Command that I used:
+
+```python
+ffuf -u http://143.198.227.172:5000/FUZZ -w /usr/share/wordlists/rockyou.txt -recursion | tee ffuf.log
+```
+
+Here, I found 3 interesting results:
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_2.png)
+
+The **`/login`** page is where we were redirected to display the “Invalid Credentials” message, while the **`/account`** page is requesting an API key:
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_3.png)
+
+After that when I checked **`/admin`** page, I found a gist link in its source code:
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_4.png)
+
+It is a link to a SQL code. From here I got the admin’s password:
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_5.png)
+
+After logging in, I was prompted this:
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_6.png)
+
+Basically it was a page that said clicked me to get flag.
+
+I intercepted that GET request because it is obvious that we have to make a GET request to fetch api key:
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_7.png)
+
+So, the challenge is that I have to make GET request that will fetch the API Key for EX-Worker but the problem is IDK the location where api data is stored.
+
+I did a simple google search on where are api information stored in `Werkzeug/3.0.1 Python/3.9.18`
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_google_search.png)
+
+And I saw this github [issue](https://github.com/apache/superset/issues/25890) where many users are having issues while fetching data from `/api/v1/` when GET request is made using user with Superset predefined Admin role in Python.
+
+So, I thought why not give it a try.
+
+For that let’s first find out which worker was fired.
+
+On the gist, in revisions section, you can see elonmusk was fired 😂:
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_8.png)
+
+So elonmusk is behind all of this.
+
+Now its time to get api key for elonmusk.
+
+First I tried this GET request but it didn’t worked:
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_9.png)
+
+After trying different combinations and different query parameters I got success when I made request to `/api/account`:
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_10.png)
+
+After entering key, here is the flag:
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_11.png)
+
+Maybe you shouldn’t have fired Elon Musk 😂
+
+Flag:
+
+```
+AUCSS{ap1_h7ck3R_w1Th_JU$T_s0M3_G1$Ts_m@g1c}
+```
+
+Bonus:
+
+As no authentication is required to make such a request, you can use curl command to do the same thing
+
+```python
+curl "http://143.198.227.172:5000/api/account?id=elonmusk"
+```
+
+![Screenshot](/static/writeups/airange24/web/sudo_arena_12.png)
+
+## Reviews:
+
+It was a tricky challenge that required guessing, and most people wouldn't approach it the way I did. Many developers keep their API Keys in Environment variables and Configuration files. Luckily, I had faced a similar challenge before while playing a private room on TryHackMe. Otherwise, I don't think I would have been able to solve it.

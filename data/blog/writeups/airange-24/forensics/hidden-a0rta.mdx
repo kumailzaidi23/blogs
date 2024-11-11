@@ -1,0 +1,71 @@
+---
+title: AIRANGE'24 - Forensics - Hidden A0rta
+date: '2024-03-10'
+tags: ['ctf', 'forensics', 'airange', 'steghide']
+draft: true
+summary: Hidden A0rta was a tricky challenge TBH, anyone who read the description carefully can solve the challenge easily.
+---
+
+## Challenge Description
+
+Why did my Samurai friend become a stand-up comedian after The war?
+
+BEcause after Getting his legs cut, his original height wasn't what it used to be! Now, seeking a new path and hiding his pain behind humor, he's slicing through jokes instead of foes, making everyone laugh while standing tall in spirit!
+
+[Download](https://airange.online/files/89cb17e854e8958c225b98d2e54a2780/challenge.jpg?token=eyJ1c2VyX2lkIjo3MSwidGVhbV9pZCI6bnVsbCwiZmlsZV9pZCI6Mzh9.Ze0IBA.hu31194ntCRK_XVTCi8_LgxOOs8)
+
+## Solution
+
+This jpg file was given to us:
+
+![Screenshot](/static/writeups/airange24/forensics/Untitled.png)
+
+I used all kinds of steganography tools on it but all in vain.
+
+When I use **`steghide`** it says this:
+
+![Screenshot](/static/writeups/airange24/forensics/Untitled1.png)
+
+After doing some research, I came across this [article](https://hackmd.io/@XeusNguyen/S1DdU66Zo) where I learned about the width and height bytes of a JPG file.
+
+You can read the following paragraph if you still don't understand:
+
+![Screenshot](/static/writeups/airange24/forensics/Untitled2.png)
+
+So, it order to restore the original picture, I have to adjust its bytes that control its heights. Because in the description of the challenge they are repeatedly mentioning height of the warrior.
+
+Opened the jpg file in **`hexeditor`**:
+
+![Screenshot](/static/writeups/airange24/forensics/Untitled3.png)
+
+I increased it from 06 → 07:
+
+![Screenshot](/static/writeups/airange24/forensics/Untitled4.png)
+
+Here is the result:
+
+![Screenshot](/static/writeups/airange24/forensics/Untitled5.png)
+
+I increased it again by 1:
+
+![Screenshot](/static/writeups/airange24/forensics/Untitled6.png)
+
+Here is the result:
+
+![Screenshot](/static/writeups/airange24/forensics/Untitled7.png)
+
+Now as we have password for **`steghide`**, use following command to extract the hidden data:
+
+```python
+steghide --extract -sf challenge.jpg
+```
+
+We got the **`flag.txt`**:
+
+![Screenshot](/static/writeups/airange24/forensics/Untitled8.png)
+
+Flag:
+
+```
+AUCSS{th3se_$tup1d_h3adeRs_w1th_h3x_3d1t}
+```
