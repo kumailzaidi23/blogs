@@ -1,7 +1,12 @@
 import Link from '@/components/Link'
 import Tag from '@/components/Tag'
 import { slug } from 'github-slugger'
-import tagData from 'app/tag-data.json'
+import fs from 'fs'
+import path from 'path'
+
+const tagData = JSON.parse(
+  fs.readFileSync(path.resolve(process.cwd(), 'app/tag-data.json'), 'utf-8')
+)
 import { genPageMetadata } from 'app/seo'
 
 export const metadata = genPageMetadata({ title: 'Tags', description: 'Things I blog about' })
