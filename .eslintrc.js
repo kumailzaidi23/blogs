@@ -1,6 +1,6 @@
 module.exports = {
   root: true,
-  parser: '@babel/eslint-parser',
+  parser: '@typescript-eslint/parser',
   env: {
     browser: true,
     amd: true,
@@ -18,10 +18,8 @@ module.exports = {
     'next/core-web-vitals',
   ],
   parserOptions: {
-    requireConfigFile: false,
-    babelOptions: {
-      plugins: ['@babel/plugin-syntax-import-assertions'],
-    },
+    project: true,
+    tsconfigRootDir: __dirname,
   },
   rules: {
     'prettier/prettier': 'error',
@@ -41,4 +39,4 @@ module.exports = {
     '@typescript-eslint/no-var-requires': 'off',
     '@typescript-eslint/ban-ts-comment': 'off',
   },
-};
+}
