@@ -3,7 +3,10 @@ import path from 'path'
 import { slug } from 'github-slugger'
 import { escape } from 'pliny/utils/htmlEscaper.js'
 import siteMetadata from '../data/siteMetadata.js'
-import tagData from '../app/tag-data.json' assert { type: 'json' }
+import fs from 'fs/promises';
+const tagData = JSON.parse(
+  await fs.readFile(new URL('../app/tag-data.json', import.meta.url))
+);
 import { allBlogs } from '../.contentlayer/generated/index.mjs'
 import { sortPosts } from 'pliny/utils/contentlayer.js'
 
