@@ -46,6 +46,8 @@
     "unist-util-visit": "^5.0.0"
   },
   "devDependencies": {
+    "@babel/eslint-parser": "^7.27.1",
+    "@babel/plugin-syntax-import-assertions": "^7.27.1",
     "@svgr/webpack": "^8.0.1",
     "@types/mdx": "^2.0.12",
     "@types/react": "^18.2.73",
