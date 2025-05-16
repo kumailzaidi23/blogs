@@ -7,7 +7,11 @@ draft: false
 summary: This was the challenge that i created for airtech ctf 2025
 ---
 
-This was the challenge that i created for airtech ctf 2025
+This was a **stack pivoting challenge** featured in **AirTech CTF 2025**, designed to push solvers out of the comfort zone of traditional ROP exploitation. The binary imposes strict constraints:
+
+- Only **24 bytes of input can be controlled** via a normal buffer overflow — not enough for a full ROP chain.
+- There are **no `pop rdi` or `pop rsi` gadgets**, making standard argument setup for syscalls or function calls impossible.
+
 
 ## Solution
 
