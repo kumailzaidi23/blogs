@@ -4,7 +4,7 @@ title: LITCTF'25 - PWN - THE MOUND
 date: '2025-08-25'
 tags: ['heap', 'pwn', 'litctf', 'writeup', 'fsop', 'overlapping-chunk']
 draft: false
-summary: A very fun challenge to solve.
+summary: Exploiting custom heap data structure
 ---
 
 ## Challenge Description
