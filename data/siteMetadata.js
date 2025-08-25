@@ -1,6 +1,6 @@
 /** @type {import("pliny/config").PlinyConfig } */
 const siteMetadata = {
-  title: 'Strange',
+  title: 'Strangek Blogs',
   author: 'Kumail Zaidi',
   headerTitle: 'doctor.strange.exploits.chronicles',
   description: 'A blog exclusively dedicated to my CTF write-ups, discoveries and related content.',
